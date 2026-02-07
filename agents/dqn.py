@@ -4,37 +4,52 @@ import torch.optim as optim
 import numpy as np
 from collections import deque
 from utils.replay_buffer import ReplayBuffer
+class DuelingQNet(nn.Module):
+    def __init__(self, state_size, action_size):
+        super(DuelingQNet, self).__init__()
+        self.feature = nn.Sequential(
+            nn.Linear(state_size, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU()
+        )
+        
+        self.value_stream = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1)
+        )
+        
+        self.advantage_stream = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, action_size)
+        )
+
+    def forward(self, state):
+        features = self.feature(state)
+        values = self.value_stream(features)
+        advantages = self.advantage_stream(features)
+        q_values = values + (advantages - advantages.mean(dim=1, keepdim=True))
+        return q_values
+
 class DQNAgent:
     def __init__(self, state_size, action_size, device="cpu"):
         self.device = torch.device(device)
+        self.action_size = action_size
         print(f"Initializing DQNAgent on {self.device}")
         
-        # Simple network that matches demo's observations
-        self.q_net = nn.Sequential(
-            nn.Linear(state_size, 64),
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, action_size)
-        ).to(self.device)
+        self.q_net = DuelingQNet(state_size, action_size).to(self.device)
+        self.target_net = DuelingQNet(state_size, action_size).to(self.device)
         
-        self.target_net = nn.Sequential(
-            nn.Linear(state_size, 64),
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, action_size)
-        ).to(self.device)
-        
-        self.optimizer = optim.Adam(self.q_net.parameters(), lr=0.001)
-        self.memory = ReplayBuffer(device=self.device)
+        self.optimizer = optim.Adam(self.q_net.parameters(), lr=0.0005) # Slower LR for stability
+        self.memory = ReplayBuffer(capacity=50000, device=self.device)
         self.update_target_net()
 
     def act(self, state, epsilon=0.1):
         if np.random.rand() < epsilon:
-            return np.random.randint(self.q_net[-1].out_features)
+            return np.random.randint(self.action_size)
         
-        # Simple numpy to tensor conversion
         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         with torch.no_grad():
             return self.q_net(state_tensor).argmax().item()
@@ -49,9 +64,12 @@ class DQNAgent:
         # Current Q values
         current_q = self.q_net(states).gather(1, actions.unsqueeze(1))
         
-        # Target Q values
+        # Double DQN Target Calculation
         with torch.no_grad():
-            next_q = self.target_net(next_states).max(1)[0]
+            # Online net selects actions
+            next_actions = self.q_net(next_states).argmax(dim=1, keepdim=True)
+            # Target net evaluates those actions
+            next_q = self.target_net(next_states).gather(1, next_actions).squeeze()
             target_q = rewards + 0.99 * next_q * (1 - dones)
         
         # MSE loss
@@ -68,8 +86,16 @@ class DQNAgent:
         self.target_net.load_state_dict(self.q_net.state_dict())
 
     def save(self, path):
-        torch.save(self.q_net.state_dict(), path)
+        """Save model and optimizer state."""
+        torch.save({
+            'model_state_dict': self.q_net.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+        }, path)
 
     def load(self, path):
-        self.q_net.load_state_dict(torch.load(path, map_location=self.device))
+        """Load model and optimizer state."""
+        checkpoint = torch.load(path, map_location=self.device)
+        self.q_net.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.update_target_net()
+        print(f"Model loaded from {path}")

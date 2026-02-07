@@ -34,3 +34,22 @@ class ReplayBuffer:
 
     def __len__(self):
         return len(self.buffer)
+
+    def save(self, path):
+        """Save the buffer to disk."""
+        import pickle
+        with open(path, 'wb') as f:
+            pickle.dump(list(self.buffer), f)
+        print(f"Replay buffer saved to {path}")
+
+    def load(self, path):
+        """Load the buffer from disk."""
+        import pickle
+        import os
+        if os.path.exists(path):
+            with open(path, 'rb') as f:
+                data = pickle.load(f)
+                self.buffer.extend(data)
+            print(f"Replay buffer loaded from {path} ({len(data)} transitions)")
+        else:
+            print(f"No replay buffer found at {path}")
